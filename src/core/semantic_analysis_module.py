@@ -1,178 +1,123 @@
-# palimpsest/src/core/semantic_analysis_module.py
 """
-Semantic Analysis Module for Palimpsest.
-
-This module provides capabilities for semantic analysis of text, including:
-- Topic modeling
-- Semantic similarity calculation
-- Concept extraction
-- Contextual understanding
-
-It complements the string matching module by analyzing the meaning
-rather than just the syntactic structure of texts.
+Semantic Analysis Module for Palimpsest
+Implements batch processing for semantic similarity using sentence transformers
 """
 
 import numpy as np
-from typing import List, Dict, Tuple, Union, Optional
-import logging
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+from typing import List, Tuple, Dict, Optional
+from functools import lru_cache
+import torch
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, 
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-class SemanticAnalysisModule:
-    """Main class for semantic text analysis."""
-    
-    def __init__(self, 
-                 model_name: str = "default", 
-                 embedding_dim: int = 768,
-                 use_pretrained: bool = True):
+class SemanticAnalyzer:
+    def __init__(self, model_name: str = 'all-MiniLM-L6-v2', cache_size: int = 1024):
         """
-        Initialize the semantic analysis module.
+        Initialize the semantic analyzer with a specific model and cache size.
         
         Args:
-            model_name: Name of the semantic model to use
-            embedding_dim: Dimension of semantic embeddings
-            use_pretrained: Whether to use pretrained models
+            model_name: Name of the sentence transformer model to use
+            cache_size: Size of the LRU cache for embeddings
         """
-        self.model_name = model_name
-        self.embedding_dim = embedding_dim
-        self.use_pretrained = use_pretrained
-        self.models = {}
-        logger.info(f"Initialized SemanticAnalysisModule with {model_name} model")
-        
-    def load_models(self):
-        """Load the required NLP models for semantic analysis."""
-        try:
-            logger.info("Loading semantic analysis models...")
-            # Placeholder for actual model loading
-            # Would typically use libraries like transformers, spacy, etc.
-            self.models["embedding"] = None  # would be an actual model
-            self.models["topic"] = None  # would be an actual model
-            logger.info("Models loaded successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Error loading models: {e}")
-            return False
-    
-    def compute_text_embedding(self, text: str) -> np.ndarray:
+        self.model = SentenceTransformer(model_name)
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.model.to(self.device)
+
+    @lru_cache(maxsize=1024)
+    def _get_embedding(self, text: str) -> np.ndarray:
         """
-        Compute semantic embedding for a text.
+        Get embedding for a single text with caching.
         
         Args:
             text: Input text to embed
             
         Returns:
-            Numpy array of embedding vectors
+            numpy.ndarray: Text embedding
         """
-        # Placeholder for actual embedding computation
-        # In a real implementation, this would use the loaded models
-        logger.debug(f"Computing embedding for text of length {len(text)}")
-        # Return random embedding for demonstration
-        return np.random.random(self.embedding_dim)
-    
-    def compute_semantic_similarity(self, text1: str, text2: str) -> float:
+        return self.model.encode([text])[0]
+
+    def compute_similarity(self, text1: str, text2: str) -> float:
         """
         Compute semantic similarity between two texts.
         
         Args:
-            text1: First text for comparison
-            text2: Second text for comparison
+            text1: First text
+            text2: Second text
             
         Returns:
-            Similarity score between 0 and 1
+            float: Similarity score between 0 and 1
         """
-        # Get embeddings
-        emb1 = self.compute_text_embedding(text1)
-        emb2 = self.compute_text_embedding(text2)
-        
-        # Compute cosine similarity
-        similarity = np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2))
-        logger.info(f"Semantic similarity: {similarity:.4f}")
-        return similarity
-    
-    def extract_topics(self, texts: List[str], num_topics: int = 5) -> Dict[int, List[str]]:
+        embedding1 = self._get_embedding(text1)
+        embedding2 = self._get_embedding(text2)
+        return float(np.dot(embedding1, embedding2) / 
+                    (np.linalg.norm(embedding1) * np.linalg.norm(embedding2)))
+
+    def batch_compute_similarity(self, text_pairs: List[Tuple[str, str]]) -> List[float]:
         """
-        Extract main topics from a collection of texts.
+        Compute similarities for multiple text pairs in batch.
         
         Args:
-            texts: List of texts to analyze
-            num_topics: Number of topics to extract
+            text_pairs: List of (text1, text2) tuples
             
         Returns:
-            Dictionary mapping topic IDs to lists of key terms
+            List[float]: List of similarity scores
         """
-        # Placeholder for topic modeling
-        # Would use LDA, NMF, BERTopic or similar in actual implementation
-        logger.info(f"Extracting {num_topics} topics from {len(texts)} texts")
+        # Extract unique texts to avoid redundant encoding
+        unique_texts = list(set([t for pair in text_pairs for t in pair]))
         
-        # Return dummy topics for demonstration
-        topics = {}
-        for i in range(num_topics):
-            topics[i] = [f"keyword_{i}_{j}" for j in range(5)]
-        
-        return topics
-    
-    def find_semantic_connections(self, 
-                                 source_text: str, 
-                                 target_texts: List[str],
-                                 threshold: float = 0.7) -> List[Dict]:
+        # Create embedding dictionary
+        embeddings = {}
+        batch_size = 32
+        for i in range(0, len(unique_texts), batch_size):
+            batch = unique_texts[i:i + batch_size]
+            batch_embeddings = self.model.encode(batch)
+            embeddings.update(dict(zip(batch, batch_embeddings)))
+
+        # Compute similarities
+        similarities = []
+        for text1, text2 in text_pairs:
+            emb1, emb2 = embeddings[text1], embeddings[text2]
+            similarity = float(np.dot(emb1, emb2) / 
+                            (np.linalg.norm(emb1) * np.linalg.norm(emb2)))
+            similarities.append(similarity)
+
+        return similarities
+
+    def find_similar_segments(self, 
+                            target_text: str, 
+                            corpus: List[str], 
+                            threshold: float = 0.7) -> List[Dict[str, any]]:
         """
-        Find semantic connections between a source text and multiple target texts.
+        Find semantically similar segments in a corpus.
         
         Args:
-            source_text: The main text to compare against
-            target_texts: List of texts to find connections with
-            threshold: Minimum similarity score to consider a connection
+            target_text: Text to compare against
+            corpus: List of texts to search through
+            threshold: Minimum similarity score to consider
             
         Returns:
-            List of dictionaries containing connection information
+            List[Dict]: List of matches with similarity scores
         """
-        connections = []
-        source_embedding = self.compute_text_embedding(source_text)
+        target_embedding = self._get_embedding(target_text)
         
-        for i, target in enumerate(target_texts):
-            target_embedding = self.compute_text_embedding(target)
-            # Compute similarity
-            similarity = np.dot(source_embedding, target_embedding) / (
-                np.linalg.norm(source_embedding) * np.linalg.norm(target_embedding))
+        # Process corpus in batches
+        batch_size = 32
+        matches = []
+        
+        for i in range(0, len(corpus), batch_size):
+            batch = corpus[i:i + batch_size]
+            batch_embeddings = self.model.encode(batch)
             
-            if similarity >= threshold:
-                connections.append({
-                    "target_index": i,
-                    "similarity": float(similarity),
-                    "text_preview": target[:100] + "..." if len(target) > 100 else target
-                })
-        
-        # Sort by similarity (highest first)
-        connections.sort(key=lambda x: x["similarity"], reverse=True)
-        logger.info(f"Found {len(connections)} semantic connections above threshold {threshold}")
-        return connections
-    
-    def analyze_conceptual_overlap(self, 
-                                  text1: str, 
-                                  text2: str) -> Dict[str, Union[float, List[str]]]:
-        """
-        Analyze the conceptual overlap between two texts.
-        
-        Args:
-            text1: First text for analysis
-            text2: Second text for analysis
+            # Compute similarities for the batch
+            similarities = cosine_similarity([target_embedding], batch_embeddings)[0]
             
-        Returns:
-            Dictionary with overlap metrics and shared concepts
-        """
-        # Placeholder for concept extraction and overlap analysis
-        # Would use NER, concept extraction, etc. in a real implementation
+            # Filter and store matches
+            for j, similarity in enumerate(similarities):
+                if similarity >= threshold:
+                    matches.append({
+                        'text': batch[j],
+                        'similarity': float(similarity),
+                        'index': i + j
+                    })
         
-        similarity = self.compute_semantic_similarity(text1, text2)
-        
-        # Dummy shared concepts
-        shared_concepts = ["concept1", "concept2", "concept3"] if similarity > 0.5 else []
-        
-        return {
-            "overall_similarity": similarity,
-            "shared_concepts": shared_concepts,
-            "conceptual_overlap_score": similarity * 0.8,  # Adjusted score
-        }
+        return sorted(matches, key=lambda x: x['similarity'], reverse=True)
